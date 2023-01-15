@@ -13,6 +13,7 @@
 __author__ = 'Isaac'
 
 """ILI9488 LCD/Touch module."""
+from micropython import const
 from time import sleep
 from math import cos, sin, pi, radians
 from sys import implementation
@@ -78,6 +79,7 @@ class Display(object):
     DFUNCTR = const(0xB6)  # Display function control
     PWCTR1 = const(0xC0)  # Power control 1
     PWCTR2 = const(0xC1)  # Power control 2
+    PWCTR3 = const(0xC2)  # Power control 2
     PWCTRA = const(0xCB)  # Power control A
     PWCTRB = const(0xCF)  # Power control B
     VMCTR1 = const(0xC5)  # VCOM control 1
@@ -143,29 +145,16 @@ class Display(object):
         # Send initialization commands
         self.write_cmd(self.SWRESET)  # Software reset
         sleep(.1)
-        self.write_cmd(self.PWCTRB, 0x00, 0xC1, 0x30)  # Pwr ctrl B
-        self.write_cmd(self.POSC, 0x64, 0x03, 0x12, 0x81)  # Pwr on seq. ctrl
-        self.write_cmd(self.DTCA, 0x85, 0x00, 0x78)  # Driver timing ctrl A
-        self.write_cmd(self.PWCTRA, 0x39, 0x2C, 0x00, 0x34, 0x02)  # Pwr ctrl A
-        self.write_cmd(self.PUMPRC, 0x20)  # Pump ratio control
-        self.write_cmd(self.DTCB, 0x00, 0x00)  # Driver timing ctrl B
-        self.write_cmd(self.PWCTR1, 0x23)  # Pwr ctrl 1
-        self.write_cmd(self.PWCTR2, 0x10)  # Pwr ctrl 2
-        self.write_cmd(self.VMCTR1, 0x3E, 0x28)  # VCOM ctrl 1
-        self.write_cmd(self.VMCTR2, 0x86)  # VCOM ctrl 2
+
+        # revised minimal set of initialization commands for ili9488
+        self.write_cmd(self.INVON)  # Inverse on
+        self.write_cmd(self.PWCTR3, 0x33)  # Pwr ctrl 3
+        self.write_cmd(self.PIXFMT, 0x55)  # pixel format
+        self.write_cmd(self.DFUNCTR, 0x02, 0x02, 0x3b) # display function setup
         self.write_cmd(self.MADCTL, self.rotation)  # Memory access ctrl
-        self.write_cmd(self.VSCRSADD, 0x00)  # Vertical scrolling start address
-        self.write_cmd(self.PIXFMT, 0x55)  # COLMOD: Pixel format
-        self.write_cmd(self.FRMCTR1, 0x00, 0x18)  # Frame rate ctrl
-        self.write_cmd(self.DFUNCTR, 0x02,0x02)
-        self.write_cmd(self.ENABLE3G, 0x00)  # Enable 3 gamma ctrl
-        self.write_cmd(self.GAMMASET, 0x01)  # Gamma curve selected
-        self.write_cmd(self.GMCTRP1, 0x0F, 0x31, 0x2B, 0x0C, 0x0E, 0x08, 0x4E,
-                       0xF1, 0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00)
-        self.write_cmd(self.GMCTRN1, 0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31,
-                       0xC1, 0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F)
+
         self.write_cmd(self.SLPOUT)  # Exit sleep
-        sleep(.1)
+        sleep(.120)                  # 120ms used in some references (vs 100ms)
         self.write_cmd(self.DISPLAY_ON)  # Display on
         sleep(.1)
         self.clear()
@@ -203,7 +192,7 @@ class Display(object):
         if color:
             line = color.to_bytes(2, 'big') * (w * 8)
         else:
-            line = bytearray(w * 16)
+            line = bytearray(w * 16) # initialized to 0 by default
         for y in range(0, h, 8):
             self.block(0, y, w - 1, y + 7, line)
 
@@ -956,13 +945,17 @@ class Display(object):
             command (byte): ILI9488 command code.
             *args (optional bytes): Data to transmit.
         """
+        #self.cs(1)              # unneeded?
         self.dc(0)
         self.cs(0)
         self.spi.write(bytearray([command]))
         self.cs(1)
         # Handle any passed data
         if len(args) > 0:
-            self.write_data(bytearray(args))
+            # unclear why, but writing mult bytes in one SPI call fails for me
+            #self.write_data(bytearray(args))
+            for data in args:
+                self.write_data(bytes([data]))
 
     def write_cmd_cpy(self, command, *args):
         """Write command to OLED (CircuitPython).
@@ -987,6 +980,7 @@ class Display(object):
         Args:
             data (bytes): Data to transmit.
         """
+        #self.cs(1)              # unneeded?
         self.dc(1)
         self.cs(0)
         self.spi.write(data)
