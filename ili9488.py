@@ -17,7 +17,7 @@ from micropython import const
 from time import sleep
 from math import cos, sin, pi, radians
 import sys
-from framebuf import FrameBuffer, RGB565  # type: ignore
+import framebuf
 import ustruct  # type: ignore
 
 
@@ -96,6 +96,7 @@ class Display(object):
     CABCTR8 = const(0xCE)  # CABC control 8
     CABCTR9 = const(0xCF)  # CABC control 9
     RDID4 = const(0xD3)  # Read ID 4
+    RDIDV = const(0xD8)  # Read ID Version
     GMCTRP1 = const(0xE0)  # Positive gamma correction
     GMCTRN1 = const(0xE1)  # Negative gamma correction
 
@@ -194,6 +195,229 @@ class Display(object):
         self.spi.deinit()
         print('display off')
 
+    def display_off(self):
+        """Turn display off."""
+        self.write_cmd(self.DISPLAY_OFF)
+
+    def display_on(self):
+        """Turn display on."""
+        self.write_cmd(self.DISPLAY_ON)
+
+
+    ## Adaption layer to match the framebuf.FrameBuffer API
+
+    def fill(self, color):
+        """Set all pixels to a color.
+
+        Args:
+            color (int): RGB565 color value
+        """
+        self.clear(color)
+
+    def pixel(self, x, y, color=None):
+        """Set or get a pixel value.
+
+        Args:
+            x (int): pixel horizontal position
+            y (int): pixel vertical position
+            color (optional int): RGB565 color value for set operation
+        Returns:
+            color of pixel value for get operation
+        """
+        if color is not None:
+            self.draw_pixel(x, y, color)
+        else:
+            ## use READ_RAM for 1 pixel
+            raise RuntimeError('Not supported yet')
+
+    def hline(self, x, y, w, color):
+        """Draw a horizontal line.
+
+        Args:
+            x (int): starting position
+            y (int): starting position
+            w (int): width of line
+            color (int): RGB565 color value
+        """
+        self.draw_hline(x, y, w, color)
+
+    def vline(self, x, y, h, color):
+        """Draw a vertical line.
+
+        Args:
+            x (int): starting position
+            y (int): starting position
+            h (int): height of line
+            color (int): RGB565 color value
+        """
+        self.draw_vline(x, y, h, color)
+
+    def line(self, x1, y1, x2, y2, color):
+        """Draw a line.
+
+        Args:
+            x1 (int): starting position
+            y1 (int): starting position
+            x2 (int): end position
+            y2 (int): end position
+            color (int): RGB565 color value
+        """
+        # this prob needs to be sped up
+        self.draw_line(x1, y1, x2, y2, color)
+
+    def rect(self, x, y, w, h, color, fill=False):
+        """Draw a rectangle.
+
+        Args:
+            x (int): upper-left position
+            y (int): upper-left position
+            w (int): width
+            h (int): height axis radius
+            color (int): RGB565 color value
+            fill (optional bool): if True fill ellipse, else just draw outline
+        """
+        if fill:
+            self.fill_rectangle(x, y, w, h, color)
+        else:
+            self.draw_rectangle(x, y, w, h, color)
+
+    def ellipse(self, x, y, xradius, yradius, color, fill=False, m=None):
+        """Draw an ellipse.
+
+        Args:
+            x (int): horizontal position of center
+            y (int): vertical position of center
+            xradius (int): major axis radius
+            yradius (int): minor axis radius
+            color (int): RGB565 color value
+            fill (optional bool): if True fill ellipse, else just draw outline
+            m (optional int): mask with 4 LSBs to limit to the 4 quadrants
+        """
+        if m:
+            ## maybe write to a temp FB and then copy quadrants?
+            raise RuntimeError('mask not yet supported in ellipse() function')
+        if fill:
+            self.fill_ellipse(x, y, xradius, yradius, color)
+        else:
+            self.draw_ellipse(x, y, xradius, yradius, color)
+
+    def poly(self, x, y, coords, color, fill=False):
+        """Draw a general polygon from an array of vertices.
+
+        Args:
+            x (int): horizontal position of center for polygon
+            y (int): vertical position of center for polygon
+            coords (array.array): 2*N array of N vertex positions
+                 (relative to center position)
+            color (int): RGB565 color value
+            fill (optional bool): if True fill polygon, else just draw outline
+        """
+        # draw_lines() takes a list of (x,y) tuples, while
+        # poly() expects an array.array of [x0,y0,x1,y1, ...], so reformat
+        #
+        clist = list(coords)    # Micropython array doesn't support subscripts
+        # Note: the coords are offsets to the central (x,y) point
+        points = [ (x+a, y+b) for a,b in zip(clist[::2], clist[1::2]) ]
+        points.append(points[0]) # make last point circle back to the starting pt
+        if fill:
+            self.fill_polygon_sub(points, color)
+        else:
+            self.draw_lines(points, color)
+
+    def text(self, str, x, y, color=None):
+        """Write in default font.
+
+        Args:
+            str (string): text to be displayed
+            x (int): horizontal position of starting point for text box
+            y (int): vertical position of starting point for text box
+            color (Optional int): RGB565 color value (Default: White).
+        """
+        # default to white on black
+        if color is None:
+            color = 0xffff
+        # special case for black foreground
+        bgcolor = 0x0 if color != 0 else 0xffff
+        #print(f'text({str}): x={x} y={y} color={color:#x} bg={bgcolor:#x}')
+
+        # code lifted from draw_text8x8() below
+        w = len(str) * 8
+        h = 8
+        # Confirm coordinates in boundary (?? or just clip?)
+        if self.is_off_grid(x, y, x + 7, y + 7):
+            return
+
+        buf = bytearray(w * 16)
+        fbuf = framebuf.FrameBuffer(buf, w, h, framebuf.RGB565)
+        fbuf.fill(bgcolor)
+        fbuf.text(str, 0, 0, color)
+        self.blit(fbuf, x, y, w, h, bgcolor)
+
+    def scroll(self, xstep, ystep):
+        """Shift the contents of the display buffer by a given vector.
+
+        Args:
+            xstep (int): number of horizontal pixels to scroll
+            ystep (int): number of vertical pixels to scroll
+        """
+        ## scroll() is doomed
+        ## HW commands only supports vertical scrolling (VSCRSADD) and a SW
+        ## implementation requires get_pixel(), which isn't working for me
+        ## (and would be too slow anyway).
+        raise RuntimeError('scroll() not yet supported')
+
+    ## can't get w,h out of fbuf, so must pass them as addl args
+    def blit(self, fbuf, x, y, w, h, key=-1, palette=None):
+        """Copy a FrameBuffer to our display.
+
+        Args:
+            fbuf (FrameBuffer): source FrameBuffer to be copied
+            x (int): horizontal position in display to copy to
+            y (int): vertical position in display to copy to
+            w (int): width of fbuf to copy
+            h (int): height of fbuf to copy
+            key (optional int): color that is treated as transparent
+            palette (optional FrameBuffer): a 1 x 2**N FB of colors if
+                color-index is different for fbuf than self
+        """
+        # check limits on x/y range
+        x0 = max(0, x)
+        y0 = max(0, y)
+        width = min(w, self.width - x0)
+        height = min(h, self.height - y0)
+        xoffset = max(0, -x)
+        yoffset = max(0, -y)
+        #print(f'blit() called: x={x} y={y} w={w} h={h} key={key}')
+
+        # if palette is provided, make sure it resolves to RGB565
+        if palette:
+            assert(palette.format == framebuf.RGB565)
+        else:
+            pass
+            ## can't access fbuf.format from base FrameBuffer class
+            #assert(fbuf.format == framebuf.RGB565)
+
+        ## The pixel-by-pixel copy is too slow!
+        ## Maybe special case to use block() if palette is None and key == -1?
+        ## (but this flips the endian-ness of pixel colors...  sigh)
+
+        # loop through fbuf, pixel by pixel
+        for a in range(width):
+            for b in range(height):
+                color = fbuf.pixel(a + xoffset, b + yoffset)
+                if color != key:
+                    # key is the transparent color (so skip those pixels)
+                    if palette:
+                        # lookup color in palette
+                        color = palette.pixel(color, 0)
+
+                    # FrameBuffer stores colors in native byte-order while
+                    # the ILI9488 wants them in big-endian order.  However,
+                    # if we access via FB.pixel() or self.draw_pixel() then
+                    # swap_color() is not needed.
+                    self.pixel(a + x0, b + y0, color)
+
+
     def clear(self, color=0):
         """Clear display.
         Args:
@@ -208,14 +432,6 @@ class Display(object):
             line = bytearray(w * 16) # initialized to 0 by default
         for y in range(0, h, 8):
             self.block(0, y, w - 1, y + 7, line)
-
-    def display_off(self):
-        """Turn display off."""
-        self.write_cmd(self.DISPLAY_OFF)
-
-    def display_on(self):
-        """Turn display on."""
-        self.write_cmd(self.DISPLAY_ON)
 
     def draw_circle(self, x0, y0, r, color):
         """Draw a circle.
@@ -445,13 +661,12 @@ class Display(object):
             coords ([[int, int],...]): Line coordinate X, Y pairs
             color (int): RGB565 color value.
         """
-        # Starting point
-        x1, y1 = coords[0]
-        # Iterate through coordinates
-        for i in range(1, len(coords)):
-            x2, y2 = coords[i]
-            self.draw_line(x1, y1, x2, y2, color)
-            x1, y1 = x2, y2
+        # Iterate through coords, drawing a line between each pair
+        x0 = y0 = None
+        for x,y in coords:
+            if x0:
+                self.draw_line(x0, y0, x, y, color)
+            x0, y0 = x, y
 
     def draw_pixel(self, x, y, color):
         """Draw a single pixel.
@@ -579,7 +794,7 @@ class Display(object):
         # wants them in big-endian order.  Hence, we use self.swap_color()
         # to rearrange the fg/bg colors before we write them to the FB
         buf = bytearray(w * 16)
-        fbuf = FrameBuffer(buf, w, h, RGB565)
+        fbuf = framebuf.FrameBuffer(buf, w, h, framebuf.RGB565)
         if background != 0:
             fbuf.fill(self.swap_color(background))
         fbuf.text(text, 0, 0, self.swap_color(color))
@@ -587,7 +802,7 @@ class Display(object):
             self.block(x, y, x + w - 1, y + (h - 1), buf)
         elif rotate == 90:
             buf2 = bytearray(w * 16)
-            fbuf2 = FrameBuffer(buf2, h, w, RGB565)
+            fbuf2 = framebuf.FrameBuffer(buf2, h, w, framebuf.RGB565)
             for y1 in range(h):
                 for x1 in range(w):
                     fbuf2.pixel(y1, x1,
@@ -595,7 +810,7 @@ class Display(object):
             self.block(x, y, x + (h - 1), y + w - 1, buf2)
         elif rotate == 180:
             buf2 = bytearray(w * 16)
-            fbuf2 = FrameBuffer(buf2, w, h, RGB565)
+            fbuf2 = framebuf.FrameBuffer(buf2, w, h, framebuf.RGB565)
             for y1 in range(h):
                 for x1 in range(w):
                     fbuf2.pixel(x1, y1,
@@ -603,7 +818,7 @@ class Display(object):
             self.block(x, y, x + w - 1, y + (h - 1), buf2)
         elif rotate == 270:
             buf2 = bytearray(w * 16)
-            fbuf2 = FrameBuffer(buf2, h, w, RGB565)
+            fbuf2 = framebuf.FrameBuffer(buf2, h, w, framebuf.RGB565)
             for y1 in range(h):
                 for x1 in range(w):
                     fbuf2.pixel(y1, x1,
@@ -767,6 +982,11 @@ class Display(object):
         for s in range(n):
             t = 2.0 * pi * s / sides + theta
             coords.append([int(r * cos(t) + x0), int(r * sin(t) + y0)])
+        # now that we have a list of vertices, do the drawing
+        self.fill_polygon_sub(coords, color)
+
+    def fill_polygon_sub(self, coords, color):
+        """Draw a filled polygon from a list of vertices (called from both APIs)."""
         # Starting point
         x1, y1 = coords[0]
         # Minimum Maximum X dict
