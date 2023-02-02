@@ -391,31 +391,43 @@ class Display(object):
 
         # if palette is provided, make sure it resolves to RGB565
         if palette:
-            assert(palette.format == framebuf.RGB565)
+            ## I think this fails too...
+            #assert(palette.format == framebuf.RGB565)
+            pass
         else:
             pass
             ## can't access fbuf.format from base FrameBuffer class
             #assert(fbuf.format == framebuf.RGB565)
 
         ## The pixel-by-pixel copy is too slow!
-        ## Maybe special case to use block() if palette is None and key == -1?
-        ## (but this flips the endian-ness of pixel colors...  sigh)
+        ## Optimize for special case if palette is None and key == -1
+        if key == -1 and palette is None:
+            step = 8            # maybe step = 4k // width?
+            for base in range(0, height, step):
+                remaining = min(step, height-base)
+                a_gen = (
+                    fbuf.pixel(a + xoffset, b + yoffset).to_bytes(2, 'big')
+                    for b in range(base, base+remaining)
+                    for a in range(width) )
+                tbuf = bytes().join(a_gen)
+                self.block(x0, base+y0, x0+width-1, base+step+y0-1, tbuf)
 
-        # loop through fbuf, pixel by pixel
-        for a in range(width):
+        else:
+            # loop through fbuf, pixel by pixel
             for b in range(height):
-                color = fbuf.pixel(a + xoffset, b + yoffset)
-                if color != key:
-                    # key is the transparent color (so skip those pixels)
-                    if palette:
-                        # lookup color in palette
-                        color = palette.pixel(color, 0)
+                for a in range(width):
+                    color = fbuf.pixel(a + xoffset, b + yoffset)
+                    if color != key:
+                        # key is the transparent color (so skip those pixels)
+                        if palette:
+                            # lookup color in palette
+                            color = palette.pixel(color, 0)
 
-                    # FrameBuffer stores colors in native byte-order while
-                    # the ILI9488 wants them in big-endian order.  However,
-                    # if we access via FB.pixel() or self.draw_pixel() then
-                    # swap_color() is not needed.
-                    self.pixel(a + x0, b + y0, color)
+                        # FrameBuffer stores colors in native byte-order
+                        # while the ILI9488 wants them in big-endian order.
+                        # However, if we access via FB.pixel() or
+                        # self.draw_pixel() then swap_color() is not needed.
+                        self.pixel(a + x0, b + y0, color)
 
 
     def clear(self, color=0):
@@ -1134,7 +1146,7 @@ class Display(object):
         self.rst(1)
         sleep(.05)
 
-    def scroll(self, y):
+    def scroll_vert(self, y):
         """Scroll display vertically.
         Args:
             y (int): Number of pixels to scroll display.

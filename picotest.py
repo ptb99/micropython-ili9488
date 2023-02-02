@@ -122,11 +122,14 @@ def test_4(baud, use_fb_api=True):
         disp.draw_text8x8(70, 30, 'rect', magenta, background=cyan)
     t1 = time.ticks_us()
 
+    # fb.fill(white)
+    # fb.rect(50, 10, 100, 50, bswap16(cyan), True)
+    # fb.text('rect', 70, 30, bswap16(magenta))
+    # disp.block(240, 0, 479, 79, buf)
     fb.fill(white)
-    fb.rect(50, 10, 100, 50, bswap16(cyan), True)
-    fb.text('rect', 70, 30, bswap16(magenta))
-    disp.block(240, 0, 479, 79, buf)
-    #disp.blit(fb, 240, 0, 240, 80) # too slow!!!
+    fb.rect(50, 10, 100, 50, cyan, True)
+    fb.text('rect', 70, 30, magenta)
+    disp.blit(fb, 240, 0, 240, 80) # too slow!!!
     #
     t2 = time.ticks_us()
     print_times('test_4(): 1st qtr', t0, t1, t2)
